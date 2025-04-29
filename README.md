@@ -1,4 +1,4 @@
-# README for Minimal Client-Server Project
+# Readme
 
 ## Overview
 
