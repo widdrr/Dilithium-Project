@@ -46,3 +46,4 @@ app
 - The client can be run to connect to the server and exchange messages.
 
 ## Disclaimer
+Most of the project setup and container infrastructure was done with the help of AI
