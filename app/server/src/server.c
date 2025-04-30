@@ -1,21 +1,18 @@
+#include "server.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <oqs/oqs.h>
-#include <stdbool.h>
-
-#define PORT 8080
-#define BUFFER_SIZE 1024
-
-typedef struct {
-    uint8_t *public_key;
-    size_t pk_len;
-    size_t sig_len;
-} ClientInfo;
 
 bool receive_public_key(int socket, ClientInfo *client) {
+    // Receive algorithm index first
+    uint32_t alg_idx;
+    if (recv(socket, &alg_idx, sizeof(alg_idx), 0) <= 0) {
+        return false;
+    }
+    client->alg_index = ntohl(alg_idx);
+
     // Receive public key length
     uint32_t len;
     if (recv(socket, &len, sizeof(len), 0) <= 0) {
@@ -26,7 +23,15 @@ bool receive_public_key(int socket, ClientInfo *client) {
     // Allocate memory for public key
     client->public_key = malloc(len);
     client->pk_len = len;
-    client->sig_len = OQS_SIG_ml_dsa_65_length_signature;
+    
+    // Get signature length from the algorithm
+    OQS_SIG *sig = OQS_SIG_new(OQS_SIG_alg_identifier(client->alg_index));
+    if (sig == NULL) {
+        free(client->public_key);
+        return false;
+    }
+    client->sig_len = sig->length_signature;
+    OQS_SIG_free(sig);
 
     // Receive public key
     size_t total_received = 0;
@@ -41,6 +46,7 @@ bool receive_public_key(int socket, ClientInfo *client) {
     }
 
     printf("\n=== Received Client Public Key ===\n");
+    printf("Algorithm: %s\n", OQS_SIG_alg_identifier(client->alg_index));
     printf("Public key length: %zu bytes\n", client->pk_len);
     printf("Public key (first 32 bytes): ");
     for (size_t i = 0; i < 32 && i < client->pk_len; i++) {
@@ -53,13 +59,16 @@ bool receive_public_key(int socket, ClientInfo *client) {
 
 bool verify_message(const uint8_t *public_key, size_t pk_len,
                    const uint8_t *message, size_t msg_len,
-                   const uint8_t *signature, size_t sig_len) {
-    OQS_SIG *sig = OQS_SIG_new(OQS_SIG_alg_ml_dsa_65);
+                   const uint8_t *signature, size_t sig_len,
+                   size_t alg_index) {
+    const char* alg_name = OQS_SIG_alg_identifier(alg_index);
+    OQS_SIG *sig = OQS_SIG_new(alg_name);
     if (sig == NULL) {
         return false;
     }
 
     printf("\n=== Verifying Signature ===\n");
+    printf("Algorithm: %s\n", alg_name);
     printf("Message: '%.*s'\n", (int)msg_len, message);
     printf("Signature length: %zu bytes\n", sig_len);
     printf("Signature (first 32 bytes): ");
@@ -105,7 +114,7 @@ bool handle_client_message(int socket, ClientInfo *client) {
     // Verify signature
     bool is_valid = verify_message(client->public_key, client->pk_len,
         message, msg_len,
-        signature, client->sig_len);
+        signature, client->sig_len, client->alg_index);
 
     // Null terminate message for printing
     message[msg_len] = '\0';

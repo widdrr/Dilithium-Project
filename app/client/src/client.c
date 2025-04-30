@@ -1,14 +1,10 @@
+#include "client.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <arpa/inet.h>
-#include <stdbool.h>
-#include <oqs/oqs.h>
-
-#define PORT 8080
-#define BUFFER_SIZE 1024
-#define CMD_SIZE 1024
 
 // Global crypto state
 uint8_t *public_key = NULL;
@@ -16,9 +12,38 @@ uint8_t *secret_key = NULL;
 size_t sig_len;
 size_t pk_len;
 size_t sk_len;
+size_t current_alg_index = 0;  // Default to first algorithm
+
+void list_algorithms() {
+    printf("\nAvailable signature algorithms:\n");
+    for (size_t i = 0; i < OQS_SIG_algs_length; i++) {
+        const char* alg_name = OQS_SIG_alg_identifier(i);
+        if (OQS_SIG_alg_is_enabled(alg_name)) {
+            printf("[%zu] %s%s\n", i, alg_name, (i == current_alg_index) ? " (current)" : "");
+        }
+    }
+}
+
+bool set_algorithm(size_t index) {
+    if (index >= OQS_SIG_algs_length) {
+        printf("Invalid algorithm index\n");
+        return false;
+    }
+    
+    const char* alg_name = OQS_SIG_alg_identifier(index);
+    if (!OQS_SIG_alg_is_enabled(alg_name)) {
+        printf("Algorithm %s is not enabled\n", alg_name);
+        return false;
+    }
+
+    current_alg_index = index;
+    printf("Algorithm set to: %s\n", alg_name);
+    return true;
+}
 
 bool generate_keypair() {
-    OQS_SIG *sig = OQS_SIG_new(OQS_SIG_alg_ml_dsa_65);
+    const char* alg_name = OQS_SIG_alg_identifier(current_alg_index);
+    OQS_SIG *sig = OQS_SIG_new(alg_name);
     if (sig == NULL) {
         printf("ERROR: OQS_SIG_new failed\n");
         return false;
@@ -38,6 +63,7 @@ bool generate_keypair() {
     }
 
     printf("\n=== Generated Keypair ===\n");
+    printf("Algorithm: %s\n", alg_name);
     printf("Public key length: %zu bytes\n", pk_len);
     printf("Secret key length: %zu bytes\n", sk_len);
     printf("Public key (first 32 bytes): ");
@@ -56,7 +82,14 @@ bool send_public_key(int sock) {
         return false;
     }
 
-    // Send public key length first
+    // Send algorithm index first
+    uint32_t alg_idx = htonl(current_alg_index);
+    if (send(sock, &alg_idx, sizeof(alg_idx), 0) < 0) {
+        perror("Failed to send algorithm index");
+        return false;
+    }
+
+    // Send public key length
     uint32_t len = htonl(pk_len);
     if (send(sock, &len, sizeof(len), 0) < 0) {
         perror("Failed to send public key length");
@@ -78,7 +111,8 @@ bool sign_message(const char *message, uint8_t **signature, size_t *actual_sig_l
         return false;
     }
 
-    OQS_SIG *sig = OQS_SIG_new(OQS_SIG_alg_ml_dsa_65);
+    const char* alg_name = OQS_SIG_alg_identifier(current_alg_index);
+    OQS_SIG *sig = OQS_SIG_new(alg_name);
     if (sig == NULL) {
         printf("ERROR: OQS_SIG_new failed\n");
         return false;
@@ -94,6 +128,7 @@ bool sign_message(const char *message, uint8_t **signature, size_t *actual_sig_l
     }
 
     printf("\n=== Signature Generated ===\n");
+    printf("Algorithm: %s\n", alg_name);
     printf("Message: '%s'\n", message);
     printf("Signature length: %zu bytes\n", *actual_sig_len);
     printf("Signature (first 32 bytes): ");
@@ -155,7 +190,7 @@ bool send_fake_signed_message(int sock, const char *message) {
         return false;
     }
 
-    // Corrupt the message by flipping some bits
+    // Corrupt the signature by flipping some bits
     for(size_t i = 0; i < signature_len && i < 8; i++) {
         signature[i] ^= 0xFF;
     }
@@ -281,6 +316,26 @@ void process_command(int *sock, char* cmd, bool *running) {
             printf("Server response: %s\n", buffer);
         }
     }
+    else if (strcmp(cmd, "algorithms") == 0 || strcmp(cmd, "alg") == 0) {
+        list_algorithms();
+    }
+    else if (strncmp(cmd, "setalg ", 7) == 0) {
+        if (*sock != -1) {
+            printf("Cannot change algorithm while connected\n");
+            return;
+        }
+        
+        char* index_str = cmd + 7;  // Skip "setalg " prefix
+        char* endptr;
+        size_t index = strtoul(index_str, &endptr, 10);
+        
+        if (*endptr != '\0' && !isspace(*endptr)) {
+            printf("Invalid algorithm index\n");
+            return;
+        }
+
+        set_algorithm(index);
+    }
     else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0) {
         if (*sock != -1) {
             close(*sock);
@@ -292,6 +347,8 @@ void process_command(int *sock, char* cmd, bool *running) {
         printf("Available commands:\n");
         printf("  connect      - Connect to server and perform key exchange\n");
         printf("  disconnect   - Disconnect from server\n");
+        printf("  algorithms   - List available signature algorithms\n");
+        printf("  setalg <id>  - Set signature algorithm by index (when not connected)\n");
         printf("  msg <text>   - Send signed message to server\n");
         printf("  fake <text>  - Send message with invalid signature\n");
         printf("  exit/quit    - Close the client\n");
