@@ -9,6 +9,8 @@ services:
         ipv4_address: 172.20.0.2
     ports:
       - "8080:8080"
+    volumes:
+      - ./experiments:/app/experiments
 
   client:
     build:
@@ -20,6 +22,8 @@ services:
     networks:
       app-network:
         ipv4_address: 172.20.0.3
+    volumes:
+      - ./experiments:/app/experiments
 
 networks:
   app-network:

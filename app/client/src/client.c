@@ -239,6 +239,182 @@ int connect_to_server() {
     return sock;
 }
 
+bool run_performance_test(void) {
+    // Create experiments directory if it doesn't exist
+    system("mkdir -p /app/experiments");
+    
+    // Variables to track best performers
+    double fastest_gen_time = -1;
+    double fastest_sign_time = -1;
+    double fastest_verify_time = -1;
+    size_t shortest_pk = -1;
+    size_t shortest_sk = -1;
+    size_t shortest_sig = -1;
+    char fastest_gen_alg[256] = "";
+    char fastest_sign_alg[256] = "";
+    char fastest_verify_alg[256] = "";
+    char shortest_pk_alg[256] = "";
+    char shortest_sk_alg[256] = "";
+    char shortest_sig_alg[256] = "";
+
+    // Test each algorithm
+    for (size_t alg_idx = 0; alg_idx < OQS_SIG_algs_length; alg_idx++) {
+        const char* alg_name = OQS_SIG_alg_identifier(alg_idx);
+        if (!OQS_SIG_alg_is_enabled(alg_name)) {
+            continue;
+        }
+
+        printf("\nTesting algorithm: %s\n", alg_name);
+        
+        char filename[256];
+        snprintf(filename, sizeof(filename), "/app/experiments/%s_results.txt", alg_name);
+
+        FILE *f = fopen(filename, "w");
+        if (!f) {
+            printf("Error: Could not create results file for %s\n", alg_name);
+            continue;
+        }
+
+        fprintf(f, "Performance Test Results for %s\n", alg_name);
+        fprintf(f, "Number of iterations: %d\n\n", NUM_TEST_ITERATIONS);
+
+        OQS_SIG *sig = OQS_SIG_new(alg_name);
+        if (!sig) {
+            printf("Error: Could not initialize %s\n", alg_name);
+            fclose(f);
+            continue;
+        }
+
+        // Key generation timing
+        double total_keygen_time = 0.0;
+        printf("Testing key generation...\n");
+        fprintf(f, "=== Key Generation ===\n");
+        
+        uint8_t *test_pk = malloc(sig->length_public_key);
+        uint8_t *test_sk = malloc(sig->length_secret_key);
+        
+        for (int i = 0; i < NUM_TEST_ITERATIONS; i++) {
+            double start_time = get_time_in_ms();
+            OQS_SIG_keypair(sig, test_pk, test_sk);
+            double end_time = get_time_in_ms();
+            total_keygen_time += (end_time - start_time);
+        }
+        
+        double avg_keygen_time = total_keygen_time / NUM_TEST_ITERATIONS;
+        fprintf(f, "Average key generation time: %.2f ms\n", avg_keygen_time);
+        fprintf(f, "Public key size: %zu bytes\n", sig->length_public_key);
+        fprintf(f, "Secret key size: %zu bytes\n\n", sig->length_secret_key);
+
+        // Update records for key generation
+        if (fastest_gen_time < 0 || avg_keygen_time < fastest_gen_time) {
+            fastest_gen_time = avg_keygen_time;
+            strncpy(fastest_gen_alg, alg_name, sizeof(fastest_gen_alg)-1);
+        }
+        if (shortest_pk < 0 || sig->length_public_key < shortest_pk) {
+            shortest_pk = sig->length_public_key;
+            strncpy(shortest_pk_alg, alg_name, sizeof(shortest_pk_alg)-1);
+        }
+        if (shortest_sk < 0 || sig->length_secret_key < shortest_sk) {
+            shortest_sk = sig->length_secret_key;
+            strncpy(shortest_sk_alg, alg_name, sizeof(shortest_sk_alg)-1);
+        }
+
+        // Signing timing
+        printf("Testing signing...\n");
+        fprintf(f, "=== Signing ===\n");
+        
+        double total_sign_time = 0.0;
+        size_t max_sig_size = 0;
+        
+        for (int i = 0; i < NUM_TEST_ITERATIONS; i++) {
+            uint8_t *signature = malloc(sig->length_signature);
+            size_t sig_actual_len;
+            
+            double start_time = get_time_in_ms();
+            OQS_SIG_sign(sig, signature, &sig_actual_len, 
+                         (uint8_t *)TEST_MESSAGE, strlen(TEST_MESSAGE), 
+                         test_sk);
+            double end_time = get_time_in_ms();
+            
+            total_sign_time += (end_time - start_time);
+            if (sig_actual_len > max_sig_size) max_sig_size = sig_actual_len;
+            
+            free(signature);
+        }
+        
+        double avg_sign_time = total_sign_time / NUM_TEST_ITERATIONS;
+        fprintf(f, "Average signing time: %.2f ms\n", avg_sign_time);
+        fprintf(f, "Maximum signature size: %zu bytes\n\n", max_sig_size);
+
+        // Update records for signing
+        if (fastest_sign_time < 0 || avg_sign_time < fastest_sign_time) {
+            fastest_sign_time = avg_sign_time;
+            strncpy(fastest_sign_alg, alg_name, sizeof(fastest_sign_alg)-1);
+        }
+        if (shortest_sig < 0 || max_sig_size < shortest_sig) {
+            shortest_sig = max_sig_size;
+            strncpy(shortest_sig_alg, alg_name, sizeof(shortest_sig_alg)-1);
+        }
+
+        // Verification timing
+        printf("Testing verification...\n");
+        fprintf(f, "=== Verification ===\n");
+        
+        uint8_t *signature = malloc(sig->length_signature);
+        size_t sig_actual_len;
+        OQS_SIG_sign(sig, signature, &sig_actual_len, 
+                     (uint8_t *)TEST_MESSAGE, strlen(TEST_MESSAGE), 
+                     test_sk);
+        
+        double total_verify_time = 0.0;
+        
+        for (int i = 0; i < NUM_TEST_ITERATIONS; i++) {
+            double start_time = get_time_in_ms();
+            OQS_SIG_verify(sig, (uint8_t *)TEST_MESSAGE, strlen(TEST_MESSAGE), 
+                          signature, sig_actual_len, test_pk);
+            double end_time = get_time_in_ms();
+            total_verify_time += (end_time - start_time);
+        }
+        
+        double avg_verify_time = total_verify_time / NUM_TEST_ITERATIONS;
+        fprintf(f, "Average verification time: %.2f ms\n", avg_verify_time);
+
+        // Update records for verification
+        if (fastest_verify_time < 0 || avg_verify_time < fastest_verify_time) {
+            fastest_verify_time = avg_verify_time;
+            strncpy(fastest_verify_alg, alg_name, sizeof(fastest_verify_alg)-1);
+        }
+
+        // Cleanup
+        free(signature);
+        free(test_pk);
+        free(test_sk);
+        OQS_SIG_free(sig);
+        fclose(f);
+    }
+
+    // Write summary file
+    FILE *summary = fopen("/app/experiments/summary_results.txt", "w");
+    if (!summary) {
+        printf("Error: Could not create summary file\n");
+        return false;
+    }
+
+    fprintf(summary, "=== Algorithm Performance Summary ===\n\n");
+    fprintf(summary, "Fastest key generation: %s (%.2f ms)\n", fastest_gen_alg, fastest_gen_time);
+    fprintf(summary, "Shortest public key: %s (%zu bytes)\n", shortest_pk_alg, shortest_pk);
+    fprintf(summary, "Shortest secret key: %s (%zu bytes)\n", shortest_sk_alg, shortest_sk);
+    fprintf(summary, "Fastest signing: %s (%.2f ms)\n", fastest_sign_alg, fastest_sign_time);
+    fprintf(summary, "Shortest signature: %s (%zu bytes)\n", shortest_sig_alg, shortest_sig);
+    fprintf(summary, "Fastest verification: %s (%.2f ms)\n", fastest_verify_alg, fastest_verify_time);
+    
+    fclose(summary);
+    printf("\nTest results have been written to individual files in /app/experiments/\n");
+    printf("Summary results have been written to: /app/experiments/summary_results.txt\n");
+    
+    return true;
+}
+
 void process_command(int *sock, char* cmd, bool *running) {
     char buffer[BUFFER_SIZE];
     
@@ -336,6 +512,9 @@ void process_command(int *sock, char* cmd, bool *running) {
 
         set_algorithm(index);
     }
+    else if (strcmp(cmd, "test") == 0) {
+        run_performance_test();
+    }
     else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0) {
         if (*sock != -1) {
             close(*sock);
@@ -351,6 +530,7 @@ void process_command(int *sock, char* cmd, bool *running) {
         printf("  setalg <id>  - Set signature algorithm by index (when not connected)\n");
         printf("  msg <text>   - Send signed message to server\n");
         printf("  fake <text>  - Send message with invalid signature\n");
+        printf("  test         - Run performance tests for all algorithms\n");
         printf("  exit/quit    - Close the client\n");
     }
 }
